@@ -2439,12 +2439,18 @@ namespace pdflib
   {
     LOG_S(INFO) << __FUNCTION__;
 
-    if(cmap_initialized) // we found a `ToUnicode` before. No need to go deeper! 
+    // For Type0 fonts with a descendant we may still need to supplement an
+    // incomplete /ToUnicode with a CIDSystemInfo-based Identity fallback (common
+    // for CJK vendor fonts such as DynaComware / HuaKang DF that embed only a
+    // sparse /ToUnicode CMap while carrying a full CIDSystemInfo declaration).
+    // For all other font types, /ToUnicode is the definitive mapping.
+    bool can_supplement = (subtype==TYPE_0 and not qpdf_desc_font.isNull());
+
+    if(cmap_initialized and not can_supplement)
       {
 	LOG_S(WARNING) << "We found a `ToUnicode` before. No need to go deeper!";
 	return;
       }
-    //else
 
     if(subtype==TYPE_0 and not qpdf_desc_font.isNull() and
        cids.has(encoding_name) )
@@ -2455,7 +2461,7 @@ namespace pdflib
 	  }
 	catch(const std::exception& exc)
 	  {
-	    LOG_S(ERROR) << "could not dump the descendant font with error: " 
+	    LOG_S(ERROR) << "could not dump the descendant font with error: "
 			 << exc.what();
 	  }
 
@@ -2464,18 +2470,25 @@ namespace pdflib
 	if(cids.decode_cmap_resource(encoding_name))
 	  {
 	    font_cid& cid = cids.get(encoding_name);
-	
-	    cmap_numb_to_char = cid.get();	
 
-	    cmap_codespaces   = cid.get_codespaces();
+	    if(not cmap_initialized)
+	      {
+		cmap_numb_to_char = cid.get();
+		cmap_codespaces   = cid.get_codespaces();
+		cid.decode_widths(numb_to_widths);
+	      }
+	    else
+	      {
+		// ToUnicode already loaded; only fill entries it missed.
+		for(const auto& entry : cid.get())
+		  cmap_numb_to_char.emplace(entry.first, entry.second);
+	      }
 
-	    cid.decode_widths(numb_to_widths);	
-
-	    cmap_initialized = true;	    
+	    cmap_initialized = true;
 	  }
 	else
 	  {
-	    cmap_initialized = false;	    
+	    if(not cmap_initialized) cmap_initialized = false;
 	  }
       }
     else if(subtype==TYPE_0 and not qpdf_desc_font.isNull())
@@ -2486,7 +2499,7 @@ namespace pdflib
 	  }
 	catch(const std::exception& exc)
 	  {
-	    LOG_S(ERROR) << "could not dump the descendant font with error: " 
+	    LOG_S(ERROR) << "could not dump the descendant font with error: "
 			 << exc.what();
 	  }
 
@@ -2501,30 +2514,43 @@ namespace pdflib
            not qpdf_object::get_int(qpdf_desc_font, {"/CIDSystemInfo", "/Supplement"}, supplement_))
           {
             LOG_S(ERROR) << "incomplete /CIDSystemInfo in descendant font";
-            cmap_initialized = false;
+            if(not cmap_initialized) cmap_initialized = false;
             return;
           }
-	
-	LOG_S(INFO) << "found descendant-font without /ToUnicode";
+
+	if(cmap_initialized)
+	  {
+	    LOG_S(INFO) << "supplementing /ToUnicode with CIDSystemInfo Identity fallback";
+	  }
+	else
+	  {
+	    LOG_S(INFO) << "found descendant-font without /ToUnicode";
+	  }
 	LOG_S(INFO) << " --> registry: " << registry_;
 	LOG_S(INFO) << " --> ordering: " << ordering_;
 	LOG_S(INFO) << " --> supplement: " << supplement_;
-	
+
 	int supplement = cids.get_supplement(registry_, ordering_);
 
-	if(supplement_>supplement)
+	if(supplement < 0)
 	  {
-	    LOG_S(ERROR) << "Unknown CIDSystemInfo with "
-			   << "registry: " << registry_ << " "
-			   << "ordering: " << ordering_ << " "
-			   << "supplement: " << supplement_ << " "
-			   << "max-supplement: " << supplement;
-
-	    cmap_initialized = false;
+	    // Registry-Ordering is unknown; nothing we can do.
+	    LOG_S(ERROR) << "Unknown Registry-Ordering: "
+			 << registry_ << "-" << ordering_;
+	    if(not cmap_initialized) cmap_initialized = false;
 	    return;
 	  }
 
-	std::string encoding_name = registry_+"-"+ordering_+"-"+std::to_string(supplement_);
+	if(supplement_ > supplement)
+	  {
+	    // Font declares a newer supplement than we ship -- use the best we have.
+	    LOG_S(WARNING) << "CIDSystemInfo supplement " << supplement_
+			   << " exceeds bundled max " << supplement
+			   << "; falling back to supplement " << supplement;
+	    supplement_ = supplement;
+	  }
+
+	std::string ros_encoding_name = registry_+"-"+ordering_+"-"+std::to_string(supplement_);
 
 	/*
 	if(cids.has_cmap_resource(name))
@@ -2533,24 +2559,38 @@ namespace pdflib
 
 	    font_cid cid;
 
-	    cids.decode_cmap_resource(name, cid);	
-	    
+	    cids.decode_cmap_resource(name, cid);
+
 	    cmap_numb_to_char = cid.get();
 
 	    cmap_initialized = true;
 	  }
 	*/
-	if(cids.decode_cmap_resource(encoding_name))
+	if(cids.decode_cmap_resource(ros_encoding_name))
 	  {
-	    font_cid& cid = cids.get(encoding_name);
-	
-	    cmap_numb_to_char = cid.get();	
+	    font_cid& cid = cids.get(ros_encoding_name);
 
-	    cmap_codespaces   = cid.get_codespaces();
+	    if(not cmap_initialized)
+	      {
+		cmap_numb_to_char = cid.get();
+		cmap_codespaces   = cid.get_codespaces();
+		cid.decode_widths(numb_to_widths);
+	      }
+	    else
+	      {
+		for(const auto& entry : cid.get())
+		  cmap_numb_to_char.emplace(entry.first, entry.second);
+	      }
 
-	    cid.decode_widths(numb_to_widths);	
-
-	    cmap_initialized = true;	    
+	    cmap_initialized = true;
+	  }
+	else if(cids.fill_identity_cmap(registry_, ordering_, cmap_numb_to_char))
+	  {
+	    // Identity-H/V font: code == CID; cid2code.txt gives CID → Unicode.
+	    LOG_S(INFO) << "init_cmap_resource: Identity CIDSystemInfo fallback applied ("
+		        << registry_ << "-" << ordering_ << "), "
+		        << cmap_numb_to_char.size() << " entries total";
+	    cmap_initialized = true;
 	  }
 	else
 	  {
@@ -2560,13 +2600,16 @@ namespace pdflib
 			   << "supplement: " << supplement_ << " "
 			   << "max-supplement: " << supplement;
 
-	    cmap_initialized = false;
+	    if(not cmap_initialized) cmap_initialized = false;
 	  }
       }
     else
       {
-        cmap_initialized = false;
-        LOG_S(WARNING) << "could not find cmap in '/ToUnicode'";
+        if(not cmap_initialized)
+          {
+            cmap_initialized = false;
+            LOG_S(WARNING) << "could not find cmap in '/ToUnicode'";
+          }
       }
 
     /*

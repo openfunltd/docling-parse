@@ -29,6 +29,15 @@ namespace pdflib
 
     bool decode_cmap_resource(std::string font_name);
 
+    // For Identity-H / Identity-V CID fonts: look up the CIDSystemInfo
+    // (registry + ordering, e.g. "Adobe" + "CNS1") and fill `out_map` with
+    // the full CID → UTF-8 table from the bundled cid2code.txt.
+    // Entries already present in `out_map` (from /ToUnicode) are NOT replaced.
+    // Returns true when the Registry-Ordering is known, false otherwise.
+    bool fill_identity_cmap(const std::string& registry,
+                             const std::string& ordering,
+                             std::unordered_map<uint32_t, std::string>& out_map);
+
     void decode_all();
 
   private:
@@ -45,6 +54,11 @@ namespace pdflib
 
     std::unordered_map<std::string, int>                       ro_2_sup;
     std::unordered_map<std::string, std::vector<std::string> > ros_2_cols;
+
+    // Registry-Ordering key (e.g. "Adobe-CNS1") → {cid2code path, columns}
+    // Built during initialise() for every ROS we ship resources for.
+    std::unordered_map<std::string,
+        std::pair<std::string, std::vector<std::string>>> ro_2_resource;
 
     std::unordered_map<std::string, std::string> cmap_2_filename;
     std::unordered_map<std::string, std::string> cmap_2_cid2code;
@@ -146,7 +160,67 @@ namespace pdflib
 	  }
       }
 
+    // Build the Registry-Ordering → resource lookup used by fill_identity_cmap().
+    for(auto itr=ros_2_cols.begin(); itr!=ros_2_cols.end(); itr++)
+      {
+        // itr->first is e.g. "Adobe-CNS1-7"; strip the trailing "-<supplement>"
+        // to get the RO key "Adobe-CNS1".
+        size_t last_dash = itr->first.rfind('-');
+        if(last_dash == std::string::npos) { continue; }
+
+        std::string ro_key   = itr->first.substr(0, last_dash);
+        std::string cid2code = directory+(itr->first)+"/cid2code.txt";
+
+        // Only record the first (highest-versioned) entry encountered; the map
+        // is built from ros_2_cols which lists each ROS once.
+        if(ro_2_resource.count(ro_key) == 0)
+          {
+            ro_2_resource[ro_key] = {cid2code, itr->second};
+            LOG_S(INFO) << __FUNCTION__ << ": registered Identity fallback for "
+                        << ro_key << " -> " << cid2code;
+          }
+      }
+
     initialized = true;
+  }
+
+  bool font_cids::fill_identity_cmap(const std::string& registry,
+                                      const std::string& ordering,
+                                      std::unordered_map<uint32_t, std::string>& out_map)
+  {
+    LOG_S(INFO) << __FUNCTION__ << ": " << registry << "-" << ordering;
+
+    std::string ro_key = registry + "-" + ordering;
+
+    auto res_it = ro_2_resource.find(ro_key);
+    if(res_it == ro_2_resource.end())
+      {
+        LOG_S(WARNING) << "fill_identity_cmap: unknown ROS " << ro_key;
+        return false;
+      }
+
+    const std::string&              cid2code_path = res_it->second.first;
+    const std::vector<std::string>& columns       = res_it->second.second;
+
+    // Use a dedicated cache key so the Identity-mode font_cid stays separate
+    // from any CMap-file-based font_cid for the same ROS.
+    std::string cache_key = ro_key + "-identity";
+
+    std::lock_guard<std::mutex> guard(cids_mutex);
+
+    if(cids.count(cache_key) == 0)
+      {
+        font_cid& cid = cids[cache_key];
+        cid.decode_identity_with_cid2code(cid2code_path, columns);
+      }
+
+    for(const auto& entry : cids[cache_key].get())
+      {
+        out_map.emplace(entry.first, entry.second);  // don't overwrite existing
+      }
+
+    LOG_S(INFO) << "fill_identity_cmap: out_map now has " << out_map.size() << " entries";
+    return true;
   }
 
   bool font_cids::decode_cmap_resource(std::string cmap_name)

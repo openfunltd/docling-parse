@@ -313,6 +313,13 @@ namespace pdflib
     // resource declared none.
     const std::vector<cmap_codespace_range>& get_codespaces() const;
 
+    // Populate cmap2str assuming code == CID (Identity-H / Identity-V encoding).
+    // No CMap file is needed: the code-to-CID mapping is the identity, so only
+    // cid2code.txt is consulted.  Does NOT overwrite existing entries, so any
+    // /ToUnicode entries already in cmap2str are preserved.
+    void decode_identity_with_cid2code(std::string              cid2code_path,
+                                        std::vector<std::string> columns);
+
     void decode_cmap_resource(std::string filename,
                               std::string cid2code,
                               std::vector<std::string> columns);
@@ -653,6 +660,26 @@ namespace pdflib
 	    //<< "for cmap (=" << itr->first << ")" ;
           }
       }
+  }
+
+  void font_cid::decode_identity_with_cid2code(std::string              cid2code_path,
+                                               std::vector<std::string> columns)
+  {
+    LOG_S(INFO) << __FUNCTION__;
+    LOG_S(INFO) << "cid2code: " << cid2code_path;
+
+    cid2utf8.clear();
+    read_cid2code(cid2code_path, columns);
+
+    // Under Identity encoding code == CID, so map each CID directly to its UTF-8
+    // string.  emplace() leaves any entry already in cmap2str (from /ToUnicode)
+    // untouched, so ToUnicode always has priority.
+    for(const auto& entry : cid2utf8)
+      {
+        cmap2str.emplace(entry.first, entry.second);
+      }
+
+    LOG_S(INFO) << __FUNCTION__ << ": populated " << cmap2str.size() << " entries";
   }
 
   void font_cid::decode_widths(std::unordered_map<uint32_t, double>& numb_to_widths)
