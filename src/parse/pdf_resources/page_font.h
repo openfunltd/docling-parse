@@ -2480,8 +2480,7 @@ namespace pdflib
 	    else
 	      {
 		// ToUnicode already loaded; only fill entries it missed.
-		for(const auto& entry : cid.get())
-		  cmap_numb_to_char.emplace(entry.first, entry.second);
+		cmap_numb_to_char.merge_missing(cid.get());
 	      }
 
 	    cmap_initialized = true;
@@ -2578,29 +2577,36 @@ namespace pdflib
 	      }
 	    else
 	      {
-		for(const auto& entry : cid.get())
-		  cmap_numb_to_char.emplace(entry.first, entry.second);
+		cmap_numb_to_char.merge_missing(cid.get());
 	      }
 
 	    cmap_initialized = true;
 	  }
-	else if(cids.fill_identity_cmap(registry_, ordering_, cmap_numb_to_char))
-	  {
-	    // Identity-H/V font: code == CID; cid2code.txt gives CID → Unicode.
-	    LOG_S(INFO) << "init_cmap_resource: Identity CIDSystemInfo fallback applied ("
-		        << registry_ << "-" << ordering_ << "), "
-		        << cmap_numb_to_char.size() << " entries total";
-	    cmap_initialized = true;
-	  }
 	else
 	  {
-	    LOG_S(ERROR) << "Unknown CIDSystemInfo with "
-			   << "registry: " << registry_ << " "
-			   << "ordering: " << ordering_ << " "
-			   << "supplement: " << supplement_ << " "
-			   << "max-supplement: " << supplement;
+	    std::unordered_map<uint32_t, std::string> identity_map;
+	    if(cids.fill_identity_cmap(registry_, ordering_, identity_map))
+	      {
+		// Identity-H/V font: code == CID; cid2code.txt gives CID → Unicode.
+		if(cmap_initialized)
+		  cmap_numb_to_char.merge_missing(identity_map);
+		else
+		  cmap_numb_to_char = cmap_value(std::move(identity_map));
+		LOG_S(INFO) << "init_cmap_resource: Identity CIDSystemInfo fallback applied ("
+			    << registry_ << "-" << ordering_ << "), "
+			    << cmap_numb_to_char.size() << " entries total";
+		cmap_initialized = true;
+	      }
+	    else
+	      {
+		LOG_S(ERROR) << "Unknown CIDSystemInfo with "
+			     << "registry: " << registry_ << " "
+			     << "ordering: " << ordering_ << " "
+			     << "supplement: " << supplement_ << " "
+			     << "max-supplement: " << supplement;
 
-	    if(not cmap_initialized) cmap_initialized = false;
+		if(not cmap_initialized) cmap_initialized = false;
+	      }
 	  }
       }
     else

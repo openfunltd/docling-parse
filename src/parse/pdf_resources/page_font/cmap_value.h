@@ -29,6 +29,9 @@ namespace pdflib
 
     bool empty() const;
 
+    // Insert entries from `other` that are not already present in this map.
+    void merge_missing(const std::unordered_map<uint32_t, std::string>& other);
+
     // Iteration (delegates to _map; for identity mode, _map is empty)
     std::unordered_map<uint32_t, std::string>::const_iterator begin() const;
     std::unordered_map<uint32_t, std::string>::const_iterator end() const;
@@ -118,6 +121,12 @@ namespace pdflib
       }
 
     return _map.empty();
+  }
+
+  void cmap_value::merge_missing(const std::unordered_map<uint32_t, std::string>& other)
+  {
+    for(const auto& entry : other)
+      _map.emplace(entry.first, entry.second);
   }
 
   std::unordered_map<uint32_t, std::string>::const_iterator cmap_value::begin() const
